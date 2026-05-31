@@ -17,12 +17,13 @@ class MultiSumoEnv:
     MAX_QUEUE = 15.0
     MAX_WAIT_TIME = 200.0
     
-    def __init__(self, cfg_path, use_gui=False, max_steps=1000, gui_delay=0, min_green=10):
+    def __init__(self, cfg_path, use_gui=False, max_steps=1000, gui_delay=0, min_green=10, action_mode='binary'):
         self.cfg_path = cfg_path
         self.use_gui = use_gui
         self.max_steps = max_steps
         self.gui_delay = gui_delay
         self.min_green = min_green
+        self.action_mode = action_mode  # 'binary' (2 actions) or 'extended' (4 actions)
         self.current_step = 0
         self.tl_ids = []
         self.controlled_lanes = {}
@@ -31,6 +32,7 @@ class MultiSumoEnv:
         self.neighbors = {}          # tl_id -> [neighbor_ids]
         self.positions = {}          # tl_id -> (row_norm, col_norm)
         self.signal_lanes = {}       # tl_id -> {signal_idx: [lane_ids]}
+        self.skip_frames = {}        # tl_id -> skip count for extended actions
         
     def reset(self):
         try:
@@ -51,12 +53,14 @@ class MultiSumoEnv:
         self.time_since_switch = {}
         self.prev_waiting = {}
         self.signal_lanes = {}
+        self.skip_frames = {}
         
         for tl_id in self.tl_ids:
             lanes = sorted(set(traci.trafficlight.getControlledLanes(tl_id)))
             self.controlled_lanes[tl_id] = lanes
             self.time_since_switch[tl_id] = self.min_green
             self.prev_waiting[tl_id] = 0.0
+            self.skip_frames[tl_id] = 0
             
             # Cache ánh xạ tín hiệu -> lane (gọi 1 lần duy nhất)
             links = traci.trafficlight.getControlledLinks(tl_id)
@@ -267,23 +271,55 @@ class MultiSumoEnv:
         return rewards
     
     def step(self, actions):
-        """Thực hiện hành động, trả về (states, rewards, done, actual_actions, info)."""
+        """Thực hiện hành động, trả về (states, rewards, done, actual_actions, info).
+        
+        Actions (phụ thuộc action_mode):
+          'binary':   0=giữ 5s,  1=đổi (có đèn vàng)
+          'extended': 0=đổi,     1=giữ 5s,  2=giữ 10s,  3=giữ 15s
+        """
         yellow_tls = []
         actual_actions = {}
+        n_switches = 0
         
         for tl_id in self.tl_ids:
-            action = actions.get(tl_id, 0)
-            cur_phase = traci.trafficlight.getPhase(tl_id)
-            
-            if action == 1 and cur_phase % 2 == 0 and self.time_since_switch[tl_id] >= self.min_green:
-                n_phases = len(traci.trafficlight.getAllProgramLogics(tl_id)[0].getPhases())
-                traci.trafficlight.setPhase(tl_id, (cur_phase + 1) % n_phases)
-                yellow_tls.append(tl_id)
-                self.time_since_switch[tl_id] = 2
-                actual_actions[tl_id] = 1
-            else:
+            # Extended: skip frames (action đã được commit từ trước)
+            if self.skip_frames.get(tl_id, 0) > 0:
+                self.skip_frames[tl_id] -= 1
                 self.time_since_switch[tl_id] += 5
                 actual_actions[tl_id] = 0
+                continue
+            
+            raw = actions.get(tl_id, 0)
+            cur_phase = traci.trafficlight.getPhase(tl_id)
+            allowed = self.time_since_switch[tl_id] >= self.min_green
+            
+            if self.action_mode == 'extended':
+                # Action 0=đổi, 1=giữ5s, 2=giữ10s, 3=giữ15s
+                if raw == 0 and cur_phase % 2 == 0 and allowed:
+                    # Switch
+                    n_phases = len(traci.trafficlight.getAllProgramLogics(tl_id)[0].getPhases())
+                    traci.trafficlight.setPhase(tl_id, (cur_phase + 1) % n_phases)
+                    yellow_tls.append(tl_id)
+                    self.time_since_switch[tl_id] = 2
+                    actual_actions[tl_id] = 1
+                    n_switches += 1
+                else:
+                    if raw >= 2:
+                        self.skip_frames[tl_id] = raw - 1  # 2→1 skip, 3→2 skip
+                    self.time_since_switch[tl_id] += 5
+                    actual_actions[tl_id] = 0
+            else:
+                # Binary: 0=giữ, 1=đổi
+                if raw == 1 and cur_phase % 2 == 0 and allowed:
+                    n_phases = len(traci.trafficlight.getAllProgramLogics(tl_id)[0].getPhases())
+                    traci.trafficlight.setPhase(tl_id, (cur_phase + 1) % n_phases)
+                    yellow_tls.append(tl_id)
+                    self.time_since_switch[tl_id] = 2
+                    actual_actions[tl_id] = 1
+                    n_switches += 1
+                else:
+                    self.time_since_switch[tl_id] += 5
+                    actual_actions[tl_id] = 0
                 
         for _ in range(3):
             traci.simulationStep()
