@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import os
+from torch.utils.tensorboard import SummaryWriter
 
 class MultiAgentPPO(PPO):
     """PPO mở rộng cho Multi-Agent với Parameter Sharing + Schedule."""
@@ -161,6 +162,8 @@ class MultiAgentPPO(PPO):
 
 
 def train():
+    writer = SummaryWriter('runs/multi_ppo_traffic')
+    
     env = MultiSumoEnv('data/grid2x2.sumocfg', use_gui=False, max_steps=500, min_green=10)
     
     states = env.reset()
@@ -175,6 +178,7 @@ def train():
     print(f"State Size: {STATE_SIZE} | Action Space: {ACTION_SIZE}")
     print(f"Min Green: {env.min_green}s")
     print(f"Topology: {dict(env.neighbors)}")
+    print(f"Topology detection: Tọa độ thực từ SUMO")
     print(f"=" * 80)
     
     agent = MultiAgentPPO(
@@ -237,7 +241,19 @@ def train():
         sw_str = "/".join(str(ep_switches[t]) for t in tl_ids)
         print(f"Ep {ep+1:3d}/{NUM_EPISODES} | R: {total:8.1f} ({', '.join(f'{t}:{ep_rewards[t]:.0f}' for t in tl_ids)}) | Sw: {sw_str} | Avg10: {avg:8.1f} | Best: {best_avg:8.1f}")
         
+        # TensorBoard logging
+        writer.add_scalar('System/TotalReward', total, ep)
+        writer.add_scalar('System/Avg10Reward', avg, ep)
+        writer.add_scalar('System/BestAvg', best_avg, ep)
+        for tl_id in tl_ids:
+            writer.add_scalar(f'Agent/{tl_id}_Reward', ep_rewards[tl_id], ep)
+            writer.add_scalar(f'Agent/{tl_id}_Switches', ep_switches[tl_id], ep)
+        if ep % 50 == 0:
+            for name, param in agent.model.named_parameters():
+                writer.add_histogram(f'Params/{name}', param.clone().cpu().detach().numpy(), ep)
+        
     env.close()
+    writer.close()
     torch.save(agent.model.state_dict(), 'models/ppo_multi_traffic.pth')
     
     # Đồ thị
