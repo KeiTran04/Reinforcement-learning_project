@@ -1,0 +1,15 @@
+<routes>
+    <vType id="car" accel="2.6" decel="4.5" sigma="0.5" length="5" maxSpeed="15"/>
+    <!-- Xe từ Nam đi Bắc -->
+    <flow id="flow_SN" type="car" from="E2" to="E0" 
+          begin="0" end="1000" probability="0.1"/>
+    <!-- Xe từ Bắc đi Nam -->
+    <flow id="flow_NS" type="car" from="-E0" to="-E2" 
+          begin="0" end="1000" probability="0.1"/>
+    <!-- Xe từ Tây đi Đông -->
+    <flow id="flow_WE" type="car" from="E3" to="-E1" 
+          begin="0" end="1000" probability="0.1"/>
+    <!-- Xe từ Đông đi Tây -->
+    <flow id="flow_EW" type="car" from="E1" to="-E3" 
+          begin="0" end="1000" probability="0.1"/>
+</routes>
