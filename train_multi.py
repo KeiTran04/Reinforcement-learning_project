@@ -172,13 +172,13 @@ def train():
     ACTION_SIZE = 2
     
     print(f"=" * 80)
-    print(f"HUẤN LUYỆN MULTI-AGENT PPO - PHIÊN BẢN PHỐI HỢP GIAO LỘ")
+    print(f"TRAIN MULTI-AGENT PPO - COORDINATED INTERSECTIONS")
     print(f"=" * 80)
-    print(f"Số Agent: {len(tl_ids)} ({tl_ids})")
+    print(f"Agents: {len(tl_ids)} ({tl_ids})")
     print(f"State Size: {STATE_SIZE} | Action Space: {ACTION_SIZE}")
     print(f"Min Green: {env.min_green}s")
     print(f"Topology: {dict(env.neighbors)}")
-    print(f"Topology detection: Tọa độ thực từ SUMO")
+    print(f"Topology detection: Real coordinates from SUMO")
     print(f"=" * 80)
     
     agent = MultiAgentPPO(
@@ -194,7 +194,7 @@ def train():
         entropy_coef=0.06   # Entropy cao hơn → phá vỡ đồng bộ cứng nhắc, khuyến khích thích ứng
     )
     
-    NUM_EPISODES = 500
+    NUM_EPISODES = 2000
     UPDATE_EVERY = 25
     
     all_rewards = []

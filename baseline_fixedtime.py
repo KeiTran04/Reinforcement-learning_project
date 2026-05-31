@@ -141,8 +141,8 @@ def run_episode(env, policy_fn, name='policy'):
 
 POLICY_MAP = {
     'fixed': ('Fixed-Time', lambda s, cfg: FixedTimePolicy()),
-    'ppo': ('PPO (MAPPO)', lambda s, cfg: PPOPolicy(s, f'models/{cfg}_multi_traffic_best.pth' if cfg != 'simple' else 'models/ppo_traffic_best.pth')),
-    'dqn': ('DQN', lambda s, cfg: DQNPolicy(s, f'models/dqn_traffic_best.pth')),
+    'ppo': ('PPO (MAPPO)', lambda s, cfg: PPOPolicy(s, 'models/ppo_multi_traffic_best.pth')),
+    'dqn': ('DQN', lambda s, cfg: DQNPolicy(s, 'models/dqn_traffic_best.pth')),
 }
 
 

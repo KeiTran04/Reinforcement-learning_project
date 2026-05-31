@@ -219,11 +219,10 @@ class MultiSumoEnv:
         return states
         
     def _get_rewards(self, actual_actions=None):
-        """Reward thông minh - các thành phần được chuẩn hóa về cùng scale [-1, 1].
+        """Reward simplified: chỉ tập trung giảm hàng chờ và tăng throughput.
         
-        Reward = waiting_penalty + delta_bonus + green_bonus + switch_reward + coord_bonus
-        
-        Mỗi thành phần được đưa về scale ~1.0 để không thành phần nào áp đảo quá trình học.
+        Reward = waiting_penalty + delta_bonus + green_bonus
+        Không còn switch_penalty hay coord_bonus gây nhiễu.
         """
         rewards = {}
         
@@ -243,28 +242,7 @@ class MultiSumoEnv:
             moving_on_green = self._count_moving(green_l)
             green_bonus = np.clip(moving_on_green / 5.0, 0.0, 1.0)
             
-            # === 4. Phạt đổi đèn thích ứng: scale [-1, 0] ===
-            switch_reward = 0.0
-            if actual_actions and actual_actions.get(tl_id, 0) == 1:
-                # Giảm mức phạt để scale cân bằng với các thành phần khác
-                if moving_on_green >= 4:
-                    switch_reward = -1.0   # rất đông
-                elif moving_on_green >= 2:
-                    switch_reward = -0.5   # vừa
-                elif moving_on_green >= 1:
-                    switch_reward = -0.2   # ít
-                else:
-                    switch_reward = 0.0    # vắng hoàn toàn
-            
-            # === 5. Thưởng phối hợp: scale [0, 1] ===
-            my_pg = traci.trafficlight.getPhase(tl_id) // 2
-            n_neighbors = len(self.neighbors[tl_id])
-            coord_bonus = sum(
-                0.3 for n in self.neighbors[tl_id]
-                if traci.trafficlight.getPhase(n) // 2 == my_pg
-            ) / max(n_neighbors, 1)
-            
-            reward = waiting_penalty + delta_bonus + green_bonus + switch_reward + coord_bonus
+            reward = waiting_penalty + delta_bonus + green_bonus
             rewards[tl_id] = reward
             self.prev_waiting[tl_id] = n_halting
             
