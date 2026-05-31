@@ -76,30 +76,44 @@ class MultiSumoEnv:
         return self._get_states()
     
     def _detect_topology(self):
-        """Tự động phát hiện vị trí lưới và hàng xóm từ TL ID (A0, A1, B0, B1...)."""
+        """Tự động phát hiện vị trí và hàng xóm từ tọa độ giao lộ (không phụ thuộc quy tắc đặt tên)."""
         self.neighbors = {tl_id: [] for tl_id in self.tl_ids}
         
-        # Phân tích vị trí từ ID: chữ cái = hàng, số = cột
+        # Lấy tọa độ thực từ SUMO
         raw_pos = {}
-        rows, cols = set(), set()
         for tl_id in self.tl_ids:
-            r = ord(tl_id[0]) - ord('A')
-            c = int(tl_id[1:])
-            raw_pos[tl_id] = (r, c)
-            rows.add(r); cols.add(c)
+            x, y = traci.junction.getPosition(tl_id)
+            raw_pos[tl_id] = (x, y)
         
-        max_r = max(rows) if rows else 1
-        max_c = max(cols) if cols else 1
+        # Chuẩn hóa vị trí về [0, 1]
+        xs = [p[0] for p in raw_pos.values()]
+        ys = [p[1] for p in raw_pos.values()]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        range_x = max(max_x - min_x, 1.0)
+        range_y = max(max_y - min_y, 1.0)
         self.positions = {
-            tl_id: (r / max(max_r, 1), c / max(max_c, 1))
-            for tl_id, (r, c) in raw_pos.items()
+            tl_id: ((x - min_x) / range_x, (y - min_y) / range_y)
+            for tl_id, (x, y) in raw_pos.items()
         }
         
-        # Hàng xóm = khoảng cách Manhattan = 1
-        for tl_id, (r1, c1) in raw_pos.items():
-            for other_id, (r2, c2) in raw_pos.items():
-                if tl_id != other_id and abs(r1-r2) + abs(c1-c2) == 1:
-                    self.neighbors[tl_id].append(other_id)
+        # Hàng xóm: khoảng cách Manhattan gần nhất
+        n_tls = len(self.tl_ids)
+        if n_tls <= 1:
+            return
+            
+        # Tính cell size (khoảng cách giữa 2 giao lộ liền kề)
+        dists = []
+        for i, (tl_a, (x1, y1)) in enumerate(raw_pos.items()):
+            for tl_b, (x2, y2) in list(raw_pos.items())[i+1:]:
+                dists.append(abs(x1 - x2) + abs(y1 - y2))
+        cell = min(dists) * 1.5 if dists else 100.0
+        
+        for tl_id, (x1, y1) in raw_pos.items():
+            for other_id, (x2, y2) in raw_pos.items():
+                if tl_id != other_id:
+                    if abs(x1 - x2) + abs(y1 - y2) < cell:
+                        self.neighbors[tl_id].append(other_id)
     
     def _get_green_red_lanes(self, tl_id):
         """Trả về (green_lanes, red_lanes) dựa trên trạng thái đèn hiện tại."""
@@ -201,53 +215,54 @@ class MultiSumoEnv:
         return states
         
     def _get_rewards(self, actual_actions=None):
-        """Reward thông minh khuyến khích 3 hành vi mong muốn.
+        """Reward thông minh - các thành phần được chuẩn hóa về cùng scale [-1, 1].
         
         Reward = waiting_penalty + delta_bonus + green_bonus + switch_reward + coord_bonus
+        
+        Mỗi thành phần được đưa về scale ~1.0 để không thành phần nào áp đảo quá trình học.
         """
         rewards = {}
         
         for tl_id in self.tl_ids:
             green_l, red_l = self._get_green_red_lanes(tl_id)
             
-            # === 1. Phạt thời gian chờ (giảm tỷ lệ để tránh áp đảo các reward khác) ===
-            current_waiting = sum(traci.lane.getWaitingTime(l) for l in self.controlled_lanes[tl_id])
-            waiting_penalty = -current_waiting / 30.0
+            # === 1. Phạt hàng chờ: tanh đưa về [-1, 0] ===
+            n_halting = self._count_halting(self.controlled_lanes[tl_id])
+            waiting_penalty = -np.tanh(n_halting / 5.0)
             
-            # === 2. Delta bonus (thưởng cải thiện) ===
-            prev = self.prev_waiting.get(tl_id, current_waiting)
-            delta_bonus = np.clip((prev - current_waiting) / 30.0, -2.0, 2.0)
+            # === 2. Delta bonus: thưởng khi hàng chờ giảm ===
+            prev_halting = self.prev_waiting.get(tl_id, n_halting)
+            delta_halting = prev_halting - n_halting
+            delta_bonus = np.clip(delta_halting / 5.0, -1.0, 1.0)
             
-            # === 3. Thưởng sử dụng đèn xanh hiệu quả (KÉO DÀI KHI ĐÔNG) ===
+            # === 3. Thưởng luồng xanh: tỉ lệ xe đang chạy trên lane xanh ===
             moving_on_green = self._count_moving(green_l)
-            green_bonus = min(moving_on_green * 0.6, 3.0)
+            green_bonus = np.clip(moving_on_green / 5.0, 0.0, 1.0)
             
-            # === 4. Phạt/thưởng đổi đèn thích ứng (GIẢM KHI ÍT) ===
+            # === 4. Phạt đổi đèn thích ứng: scale [-1, 0] ===
             switch_reward = 0.0
             if actual_actions and actual_actions.get(tl_id, 0) == 1:
+                # Giảm mức phạt để scale cân bằng với các thành phần khác
                 if moving_on_green >= 4:
-                    # Đổi khi lane xanh rất đông → phạt cực nặng
-                    switch_reward = -8.0
+                    switch_reward = -1.0   # rất đông
                 elif moving_on_green >= 2:
-                    # Đổi khi lane xanh vừa → phạt nặng
-                    switch_reward = -4.0
+                    switch_reward = -0.5   # vừa
                 elif moving_on_green >= 1:
-                    # Đổi khi có ít xe → phạt nhẹ
-                    switch_reward = -1.5
+                    switch_reward = -0.2   # ít
                 else:
-                    # Đổi khi hoàn toàn vắng xe → không phạt (khuyến khích giải tỏa lane đỏ)
-                    switch_reward = 0.0
+                    switch_reward = 0.0    # vắng hoàn toàn
             
-            # === 5. Thưởng phối hợp (ĐỒNG PHA VỚI HÀNG XÓM) ===
+            # === 5. Thưởng phối hợp: scale [0, 1] ===
             my_pg = traci.trafficlight.getPhase(tl_id) // 2
+            n_neighbors = len(self.neighbors[tl_id])
             coord_bonus = sum(
                 0.3 for n in self.neighbors[tl_id]
                 if traci.trafficlight.getPhase(n) // 2 == my_pg
-            )
+            ) / max(n_neighbors, 1)
             
             reward = waiting_penalty + delta_bonus + green_bonus + switch_reward + coord_bonus
             rewards[tl_id] = reward
-            self.prev_waiting[tl_id] = current_waiting
+            self.prev_waiting[tl_id] = n_halting
             
         return rewards
     
